@@ -1,6 +1,7 @@
 # Installs Shastra Guard for the person currently signed in to this computer.
 # Run through "Install Shastra Guard (run as admin).cmd".
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ErrorActionPreference = 'Continue'
 $dir  = $null
 $exe  = $null
 $net  = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"

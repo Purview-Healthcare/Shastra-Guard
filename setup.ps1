@@ -19,4 +19,5 @@ Invoke-WebRequest -UseBasicParsing -Uri ($base + 'ShastraGuard.cs?t=' + $stamp) 
 $code = (Invoke-WebRequest -UseBasicParsing -Uri ($base + 'Install-ShastraGuard.ps1?t=' + $stamp)).Content
 # Run the installer from memory (no script file), so Windows' script policy does not apply
 $code = $code -replace '\$here\s*=\s*Split-Path[^\r\n]*', ('$here = "' + $tmp + '"')
+$ErrorActionPreference = 'Continue'   # messages like 'task not found' must not stop the installer
 Invoke-Expression $code

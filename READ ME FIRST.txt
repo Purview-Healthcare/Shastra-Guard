@@ -1,0 +1,45 @@
+SHASTRA GUARD - INSTALL STEPS (one computer at a time)
+
+What it does
+- At login and unlock: Purview Shastra opens (or comes to the front).
+- Windows + L once: Shastra comes to the front with a "Before you lock" box
+  (buttons: Open Shastra, Lock now). Windows + L again, or "Lock now", locks.
+- Shut down / restart / sign out: Shastra and a "Before you shut down" box come
+  up first, then Windows shows its own page: "Purview Shastra: You are still
+  punched in. Shutting down anyway is recorded as a missed punch out. Click
+  Cancel, punch out in Purview Shastra, then shut down." Click Cancel.
+  A "Before you shut down" box is waiting (buttons: Open Shastra, Shut down now,
+  Restart now). Punch out, then click "Shut down now" or "Restart now".
+  Every Start menu shut down is paused like this.
+  "Shut down anyway" always works (Windows requires it) and is recorded in
+  C:\Users\Public\Documents\ShastraPunchIn-missed-punch-outs.txt on that computer.
+- Updates itself: it checks GitHub (Purview-Healthcare/Shastra-Guard) at start and
+  every 6 hours, and installs a newer version quietly. Install once per computer.
+- If Shastra Guard ever stops, Windows restarts it within 1 minute.
+  While it is stopped, Windows + L locks normally.
+
+Before you start, on each computer
+- The employee must be signed in to their own account.
+- Purview Shastra must already be installed as an app, with its
+  "Purview Shastra" icon on the desktop.
+
+Install
+1. Copy this whole folder to the computer (for example, to the Desktop).
+2. Open the folder.
+3. Right-click "Install Shastra Guard (run as admin).cmd"
+   and choose "Run as administrator".
+4. Enter the admin username and password when Windows asks.
+5. Wait for the green DONE message. Press any key to close.
+6. Test: press Windows + L once (Shastra appears), then again (it locks).
+   Unlock: Shastra should be in front within a few seconds.
+
+Remove
+- Right-click "Uninstall Shastra Guard (run as admin).cmd"
+  and choose "Run as administrator".
+
+Notes
+- While Shastra Guard runs, "Lock" is hidden from the Ctrl + Alt + Del screen.
+  Use Windows + L twice instead.
+- If the computer locks by itself after being idle, that still happens
+  without the reminder.
+- If Windows shows "Windows protected your PC", click More info, then Run anyway.

@@ -1,5 +1,5 @@
 # Shastra Guard one-line installer. Run from a PowerShell window opened as administrator:
-#   irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/setup.ps1 | iex
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $base = 'https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/'
@@ -14,8 +14,9 @@ if (-not $isAdmin) {
     return
 }
 Write-Host 'Downloading Shastra Guard...'
-foreach ($f in 'ShastraGuard.cs', 'Install-ShastraGuard.ps1') {
-    Invoke-WebRequest -UseBasicParsing -Uri ($base + $f + '?t=' + (Get-Date).Ticks) -OutFile (Join-Path $tmp $f)
-}
-# Run in a separate PowerShell that allows this script, so no setting on the computer is changed
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tmp 'Install-ShastraGuard.ps1')
+$stamp = (Get-Date).Ticks
+Invoke-WebRequest -UseBasicParsing -Uri ($base + 'ShastraGuard.cs?t=' + $stamp) -OutFile (Join-Path $tmp 'ShastraGuard.cs')
+$code = (Invoke-WebRequest -UseBasicParsing -Uri ($base + 'Install-ShastraGuard.ps1?t=' + $stamp)).Content
+# Run the installer from memory (no script file), so Windows' script policy does not apply
+$code = $code -replace '\$here\s*=\s*Split-Path[^\r\n]*', ('$here = ''' + $tmp + '''')
+Invoke-Expression $code

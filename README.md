@@ -9,7 +9,7 @@ Small Windows helper for Purview Shastra (attendance). It brings Shastra to the 
 3. Paste this line and press Enter:
 
 ```
-irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/setup.ps1 | iex
 ```
 
 4. Wait for the green DONE message. Test: press Windows + L once (Shastra appears), then again (it locks).
@@ -17,12 +17,12 @@ irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/inst
 To remove it, use the same steps with:
 
 ```
-irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/unsetup.ps1 | iex
 ```
 
 ## Files
 
-- `install.ps1` / `uninstall.ps1`: the one-line installer and uninstaller above.
+- `setup.ps1` / `unsetup.ps1`: the one-line installer and uninstaller above.
 - `Shastra Guard Installer.zip`: the same installer as a zip, for computers without internet access to GitHub. Browsers may flag the zip, so prefer the one-line install.
 - `version.txt`: the current version. Installed copies check this file at start and every 6 hours, and update themselves when it changes.
 - `ShastraGuard.cs`: the program. Installed copies download this file when `version.txt` changes.

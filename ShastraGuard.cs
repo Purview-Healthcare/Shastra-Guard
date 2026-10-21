@@ -64,6 +64,7 @@ class ShastraGuard : Form
     public const string CurrentVersion = "1.5.1";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
+    static System.Windows.Forms.Timer updTimer;
     static bool quietStart = false;
     static DateTime lastShutdownAsk = DateTime.MinValue;
     static DateTime allowEndUntil = DateTime.MinValue;   // set by "Shut down now" / "Restart now"
@@ -371,10 +372,21 @@ class ShastraGuard : Form
                 updating = true;
                 Directory.CreateDirectory(upd);
                 string src = Path.Combine(upd, "ShastraGuard.cs");
-                wc.DownloadFile(UpdateBase + "ShastraGuard.cs?t=" + DateTime.Now.Ticks, src);
+                // commit.txt names the exact release copy, which GitHub never serves stale
+                string commit = "";
+                try { commit = wc.DownloadString(UpdateBase + "commit.txt?t=" + DateTime.Now.Ticks).Trim(); } catch { }
+                string srcUrl = (commit.Length >= 7)
+                    ? "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/" + commit + "/ShastraGuard.cs"
+                    : UpdateBase + "ShastraGuard.cs?t=" + DateTime.Now.Ticks;
+                wc.DownloadFile(srcUrl, src);
                 string text = File.ReadAllText(src);
                 if (text.IndexOf("class ShastraGuard") < 0 || text.IndexOf("CurrentVersion = \"" + latest + "\"") < 0)
-                { Log("Update file does not match version " + latest + "; skipped"); updating = false; return; }
+                {
+                    Log("Update file does not match version " + latest + "; will try again in 10 minutes");
+                    updating = false;
+                    if (updTimer != null) { updTimer.Stop(); updTimer.Interval = 10 * 60 * 1000; updTimer.Start(); }
+                    return;
+                }
                 string net = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Microsoft.NET\Framework64\v4.0.30319");
                 string newExe = Path.Combine(upd, "ShastraGuard.exe");
                 if (File.Exists(newExe)) File.Delete(newExe);
@@ -436,10 +448,10 @@ class ShastraGuard : Form
         beat.Start();
         if (!quietStart) OnArrive("Login");
         else Log("Restarted in the background");
-        System.Windows.Forms.Timer upd = new System.Windows.Forms.Timer();
-        upd.Interval = 90000;
-        upd.Tick += delegate { upd.Interval = 6 * 60 * 60 * 1000; ThreadPool.QueueUserWorkItem(delegate { CheckForUpdate(); }); };
-        upd.Start();
+        updTimer = new System.Windows.Forms.Timer();
+        updTimer.Interval = 90000;
+        updTimer.Tick += delegate { updTimer.Interval = 6 * 60 * 60 * 1000; ThreadPool.QueueUserWorkItem(delegate { CheckForUpdate(); }); };
+        updTimer.Start();
     }
 
     void OnSessionSwitch(object sender, SessionSwitchEventArgs e)

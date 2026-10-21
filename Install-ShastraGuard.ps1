@@ -22,13 +22,13 @@ try {
     Say "Install folder: $dir"
 
     # 2. Stop any older copy
-    schtasks /end /tn 'Shastra Guard' 2>$null | Out-Null
-    schtasks /end /tn 'Shastra Guard Keepalive' 2>$null | Out-Null
-    schtasks /end /tn 'Shastra Punch In' 2>$null | Out-Null
+    cmd /c "schtasks /end /tn \"Shastra Guard\" >nul 2>&1"
+    cmd /c 'schtasks /end /tn "Shastra Guard Keepalive" >nul 2>&1'
+    cmd /c 'schtasks /end /tn "Shastra Punch In" >nul 2>&1'
     Get-Process ShastraGuard -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
-    schtasks /delete /tn 'Shastra Guard' /f 2>$null | Out-Null
-    schtasks /delete /tn 'Shastra Guard Keepalive' /f 2>$null | Out-Null
+    cmd /c "schtasks /delete /tn \"Shastra Guard\" /f >nul 2>&1"
+    cmd /c 'schtasks /delete /tn "Shastra Guard Keepalive" /f >nul 2>&1'
     Remove-Item 'C:\Program Files\Purview Shastra Guard' -Recurse -Force -ErrorAction SilentlyContinue
     $pol = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\System"
     if (Test-Path $pol) { Remove-ItemProperty -Path $pol -Name DisableLockWorkstation -ErrorAction SilentlyContinue }
@@ -95,10 +95,10 @@ $triggers
       <Enabled>true</Enabled>
     </TimeTrigger>
 "@
-    schtasks /delete /tn 'Shastra Punch In' /f 2>$null | Out-Null
+    cmd /c 'schtasks /delete /tn "Shastra Punch In" /f >nul 2>&1'
     Register-ScheduledTask -TaskName 'Shastra Guard' -Xml (TaskXml $main '') -Force -ErrorAction Stop | Out-Null
     Register-ScheduledTask -TaskName 'Shastra Guard Keepalive' -Xml (TaskXml $keep '--quiet') -Force -ErrorAction Stop | Out-Null
-    schtasks /run /tn 'Shastra Guard' | Out-Null
+    cmd /c "schtasks /run /tn \"Shastra Guard\" >nul 2>&1"
 
     Say ''
     # Make sure the employee owns the folder, so self-updates can write to it

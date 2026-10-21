@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.7.0";
+    public const string CurrentVersion = "1.7.1";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -816,14 +816,11 @@ class AwayForm : Form
         Controls.Add(pic); Controls.Add(title); Controls.Add(msg);
         int right = ClientSize.Width - 34, top = 256, h = 52;
 
-        Button dismiss = MakeBtn("Dismiss", false);
-        dismiss.SetBounds(right - 150, top, 150, h);
-        dismiss.Click += delegate { Close(); };
         Button openBtn = MakeBtn("Open Shastra", true);
-        openBtn.SetBounds(right - 150 - 16 - 200, top, 200, h);
+        openBtn.SetBounds(right - 220, top, 220, h);
         openBtn.Click += delegate { owner.OpenShastraFromAway(); };
-        Controls.Add(dismiss); Controls.Add(openBtn);
-        AcceptButton = openBtn; CancelButton = dismiss;
+        Controls.Add(openBtn);
+        AcceptButton = openBtn;
     }
 
     static Button MakeBtn(string text, bool primary)

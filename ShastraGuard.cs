@@ -28,7 +28,7 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("Purview Shastra")]
 [assembly: System.Reflection.AssemblyProduct("Purview Shastra")]
 [assembly: System.Reflection.AssemblyCompany("Purview")]
-[assembly: System.Reflection.AssemblyVersion("1.5.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
 
 class ShastraGuard : Form
 {
@@ -61,7 +61,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.5.1";
+    public const string CurrentVersion = "1.5.2";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     static System.Windows.Forms.Timer updTimer;
@@ -310,14 +310,9 @@ class ShastraGuard : Form
 
     public void OpenShastraFromBox()
     {
-        ThreadPool.QueueUserWorkItem(delegate {
-            ShowShastra("Box");
-            Thread.Sleep(300);
-            BeginInvoke((MethodInvoker)delegate {
-                foreach (ReminderForm f in new ReminderForm[] { reminder, shutdownBox })
-                    if (f != null && !f.IsDisposed) { f.TopMost = true; f.Activate(); }
-            });
-        });
+        foreach (ReminderForm f in new ReminderForm[] { reminder, shutdownBox })
+            if (f != null && !f.IsDisposed) f.Compact();
+        ThreadPool.QueueUserWorkItem(delegate { ShowShastra("Box"); });
     }
 
     public void PowerNow(bool restart)
@@ -600,18 +595,18 @@ class ReminderForm : Form
                 g.DrawString("!", f, Brushes.White, new RectangleF(3, 5, 104, 104), sf);
             }
         }
-        PictureBox pic = new PictureBox();
+        pic = new PictureBox();
         pic.Image = icon;
         pic.SizeMode = PictureBoxSizeMode.AutoSize;
         pic.Location = new Point(32, 40);
 
-        Label title = new Label();
+        title = new Label();
         title.Text = shutdown ? "Before you shut down" : "Before you lock";
         title.Font = new Font("Segoe UI", 20f, FontStyle.Bold);
         title.ForeColor = Color.FromArgb(232, 184, 74);
         title.SetBounds(170, 36, 450, 44);
 
-        Label msg = new Label();
+        msg = new Label();
         msg.Text = shutdown ? "Punch out in Purview Shastra first.\nThen choose what you want to do." : "Going on a break or logging out?\nMark it in Purview Shastra first.";
         msg.Font = new Font("Segoe UI", 13f);
         msg.SetBounds(172, 88, 450, 64);
@@ -619,7 +614,7 @@ class ReminderForm : Form
         Controls.Add(pic); Controls.Add(title); Controls.Add(msg);
         int right = ClientSize.Width - 28, top = 190, h = 48;
 
-        Button openBtn = MakeButton("Open Shastra", false);
+        openBtn = MakeButton("Open Shastra", false);
         openBtn.SetBounds(32, top, 170, h);
         openBtn.Click += delegate { owner.OpenShastraFromBox(); };
         Controls.Add(openBtn);
@@ -642,6 +637,38 @@ class ReminderForm : Form
             Controls.Add(lockBtn);
             AcceptButton = lockBtn;
         }
+    }
+
+    PictureBox pic; Label title; Label msg; Button openBtn;
+    bool compact = false;
+
+    // Shrink to a small strip in the bottom-right corner with just the action buttons,
+    // so Shastra can be used while the box stays one click away.
+    public void Compact()
+    {
+        if (compact) return;
+        compact = true;
+        pic.Visible = false; title.Visible = false; msg.Visible = false; openBtn.Visible = false;
+        Label hint = new Label();
+        hint.Text = "Done in Shastra?";
+        hint.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+        hint.ForeColor = Color.FromArgb(232, 184, 74);
+        hint.AutoSize = true;
+        Controls.Add(hint);
+        int x = 20;
+        hint.Location = new Point(x, 22);
+        x += hint.PreferredWidth + 16;
+        foreach (Control c in Controls)
+        {
+            Button b = c as Button;
+            if (b == null || !b.Visible) continue;
+            b.SetBounds(x, 12, b.Width, 40);
+            x += b.Width + 10;
+        }
+        ClientSize = new Size(x + 10, 64);
+        Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+        Location = new Point(wa.Right - Width - 16, wa.Bottom - Height - 16);
+        TopMost = true;
     }
 
     static Button MakeButton(string text, bool primary)

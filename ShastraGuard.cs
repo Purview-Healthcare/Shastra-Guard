@@ -28,7 +28,7 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("Purview Shastra")]
 [assembly: System.Reflection.AssemblyProduct("Purview Shastra")]
 [assembly: System.Reflection.AssemblyCompany("Purview")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.1.0")]
 
 class ShastraGuard : Form
 {
@@ -61,7 +61,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.5.0";
+    public const string CurrentVersion = "1.5.1";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     static bool quietStart = false;

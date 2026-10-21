@@ -17,4 +17,5 @@ Write-Host 'Downloading Shastra Guard...'
 foreach ($f in 'ShastraGuard.cs', 'Install-ShastraGuard.ps1') {
     Invoke-WebRequest -UseBasicParsing -Uri ($base + $f + '?t=' + (Get-Date).Ticks) -OutFile (Join-Path $tmp $f)
 }
-& (Join-Path $tmp 'Install-ShastraGuard.ps1')
+# Run in a separate PowerShell that allows this script, so no setting on the computer is changed
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tmp 'Install-ShastraGuard.ps1')

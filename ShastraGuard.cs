@@ -47,6 +47,10 @@ class ShastraGuard : Form
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
     [DllImport("user32.dll")] static extern bool LockWorkStation();
+    // GetLastInputInfo reports only the TIME of the last mouse or keyboard activity,
+    // never what was typed or clicked. It is used to measure how long the desk has been idle.
+    [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
     delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
     [StructLayout(LayoutKind.Sequential)] struct KBDLLHOOKSTRUCT { public uint vkCode, scanCode, flags, time; public IntPtr extra; }
     [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, HookProc fn, IntPtr mod, uint thread);
@@ -61,9 +65,54 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.5.2";
+    public const string CurrentVersion = "1.6.0";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
+    // ---- activity record (no-movement and screen-locked periods) ----
+    const string ActivityCsv = @"C:\Users\Public\Documents\ShastraGuard-activity.csv";
+    const int IdleMinutes = 3;                 // a no-movement period starts after this many minutes
+    static DateTime idleStart = DateTime.MinValue;   // start of the current no-movement period, if any
+    static DateTime lockStart = DateTime.MinValue;   // when the screen was locked, if it is
+
+    static uint IdleSeconds()
+    {
+        LASTINPUTINFO lii = new LASTINPUTINFO();
+        lii.cbSize = (uint)Marshal.SizeOf(lii);
+        if (!GetLastInputInfo(ref lii)) return 0;
+        return unchecked((uint)Environment.TickCount - lii.dwTime) / 1000;
+    }
+
+    static void WriteActivityRow(DateTime start, DateTime end, string type)
+    {
+        try
+        {
+            int mins = (int)Math.Round((end - start).TotalMinutes);
+            if (mins < 1) return;
+            if (!File.Exists(ActivityCsv))
+                File.AppendAllText(ActivityCsv, "Date,Start,End,Minutes,Type,User\r\n");
+            File.AppendAllText(ActivityCsv, string.Format("{0},{1},{2},{3},{4},{5}\r\n",
+                start.ToString("yyyy-MM-dd"), start.ToString("HH:mm:ss"), end.ToString("HH:mm:ss"),
+                mins, type, Environment.UserName));
+        }
+        catch { }
+    }
+
+    // Runs every 30 seconds: notices when the desk has had no movement for 3 minutes or more,
+    // and records the period (date, start, end, minutes) once movement comes back.
+    static void CheckActivity()
+    {
+        if (lockStart != DateTime.MinValue) return;   // the lock/unlock path records locked time
+        uint idle = IdleSeconds();
+        if (idle >= IdleMinutes * 60)
+        {
+            if (idleStart == DateTime.MinValue) idleStart = DateTime.Now.AddSeconds(-idle);
+        }
+        else if (idleStart != DateTime.MinValue)
+        {
+            WriteActivityRow(idleStart, DateTime.Now.AddSeconds(-idle), "No movement");
+            idleStart = DateTime.MinValue;
+        }
+    }
     static System.Windows.Forms.Timer updTimer;
     static bool quietStart = false;
     static DateTime lastShutdownAsk = DateTime.MinValue;
@@ -447,6 +496,10 @@ class ShastraGuard : Form
         updTimer.Interval = 90000;
         updTimer.Tick += delegate { updTimer.Interval = 6 * 60 * 60 * 1000; ThreadPool.QueueUserWorkItem(delegate { CheckForUpdate(); }); };
         updTimer.Start();
+        System.Windows.Forms.Timer act = new System.Windows.Forms.Timer();
+        act.Interval = 30000;
+        act.Tick += delegate { CheckActivity(); };
+        act.Start();
     }
 
     void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -454,9 +507,17 @@ class ShastraGuard : Form
         if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.SessionLogon)
         {
             locking = false;
+            if (lockStart != DateTime.MinValue) { WriteActivityRow(lockStart, DateTime.Now, "Screen locked"); lockStart = DateTime.MinValue; }
+            idleStart = DateTime.MinValue;
             if (winLControlled) { ArmHook(); SetWinLDisabled(true); }
             lastWinL = DateTime.MinValue;
             OnArrive("Unlock");
+        }
+        else if (e.Reason == SessionSwitchReason.SessionLock)
+        {
+            // Close any open no-movement period at the lock time, then record the locked time separately.
+            if (idleStart != DateTime.MinValue) { WriteActivityRow(idleStart, DateTime.Now, "No movement"); idleStart = DateTime.MinValue; }
+            lockStart = DateTime.Now;
         }
     }
 

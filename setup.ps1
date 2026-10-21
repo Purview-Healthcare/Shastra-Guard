@@ -18,5 +18,5 @@ $stamp = (Get-Date).Ticks
 Invoke-WebRequest -UseBasicParsing -Uri ($base + 'ShastraGuard.cs?t=' + $stamp) -OutFile (Join-Path $tmp 'ShastraGuard.cs')
 $code = (Invoke-WebRequest -UseBasicParsing -Uri ($base + 'Install-ShastraGuard.ps1?t=' + $stamp)).Content
 # Run the installer from memory (no script file), so Windows' script policy does not apply
-$code = $code -replace '\$here\s*=\s*Split-Path[^\r\n]*', ('$here = ''' + $tmp + '''')
+$code = $code -replace '\$here\s*=\s*Split-Path[^\r\n]*', ('$here = "' + $tmp + '"')
 Invoke-Expression $code

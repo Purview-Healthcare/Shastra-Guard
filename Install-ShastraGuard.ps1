@@ -22,12 +22,12 @@ try {
     Say "Install folder: $dir"
 
     # 2. Stop any older copy
-    cmd /c "schtasks /end /tn \"Shastra Guard\" >nul 2>&1"
+    cmd /c 'schtasks /end /tn "Shastra Guard" >nul 2>&1'
     cmd /c 'schtasks /end /tn "Shastra Guard Keepalive" >nul 2>&1'
     cmd /c 'schtasks /end /tn "Shastra Punch In" >nul 2>&1'
     Get-Process ShastraGuard -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
-    cmd /c "schtasks /delete /tn \"Shastra Guard\" /f >nul 2>&1"
+    cmd /c 'schtasks /delete /tn "Shastra Guard" /f >nul 2>&1'
     cmd /c 'schtasks /delete /tn "Shastra Guard Keepalive" /f >nul 2>&1'
     Remove-Item 'C:\Program Files\Purview Shastra Guard' -Recurse -Force -ErrorAction SilentlyContinue
     $pol = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -98,7 +98,7 @@ $triggers
     cmd /c 'schtasks /delete /tn "Shastra Punch In" /f >nul 2>&1'
     Register-ScheduledTask -TaskName 'Shastra Guard' -Xml (TaskXml $main '') -Force -ErrorAction Stop | Out-Null
     Register-ScheduledTask -TaskName 'Shastra Guard Keepalive' -Xml (TaskXml $keep '--quiet') -Force -ErrorAction Stop | Out-Null
-    cmd /c "schtasks /run /tn \"Shastra Guard\" >nul 2>&1"
+    cmd /c 'schtasks /run /tn "Shastra Guard" >nul 2>&1'
 
     Say ''
     # Make sure the employee owns the folder, so self-updates can write to it

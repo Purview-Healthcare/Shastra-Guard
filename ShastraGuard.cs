@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.7.1";
+    public const string CurrentVersion = "1.7.2";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -116,24 +116,42 @@ class ShastraGuard : Form
         }
     }
 
-    AwayForm awayBox;
+    NoticeForm awayBox;
+    // Information only: the period is already over, so there is nothing to mark. OK closes it.
     void ShowAwayBox(DateTime start, DateTime end)
     {
         try
         {
+            int mins = (int)Math.Round((end - start).TotalMinutes);
+            string away = mins == 1 ? "1 minute" : mins + " minutes";
+            string text = "You were away from " + start.ToString("h:mm tt") + " to " + end.ToString("h:mm tt")
+                + "\n(" + away + ").\n\nThis is recorded as idle time in your day,\nseparate from breaks and time on floor.";
             if (awayBox != null && !awayBox.IsDisposed) awayBox.Close();
-            awayBox = new AwayForm(this, start, end);
+            awayBox = new NoticeForm("No movement recorded", text, Color.FromArgb(220, 38, 38), Color.White, "OK", null);
             awayBox.Show();
             awayBox.Activate();
         }
         catch { }
     }
 
-    // Open Shastra from the away box: bring Shastra to the front and close the box.
-    public void OpenShastraFromAway()
+    NoticeForm welcomeBox;
+    // Shown at login and on unlock: end a break or punch in. Open Shastra brings Shastra forward.
+    void ShowWelcomeBox()
     {
-        if (awayBox != null && !awayBox.IsDisposed) awayBox.Close();
-        ThreadPool.QueueUserWorkItem(delegate { ShowShastra("Away"); });
+        try
+        {
+            if (welcomeBox != null && !welcomeBox.IsDisposed) welcomeBox.Close();
+            welcomeBox = new NoticeForm("Welcome back",
+                "Back from a break?\nEnd your break in Purview Shastra.\n\nStarting your shift?\nPunch in.",
+                Color.FromArgb(232, 184, 74), Color.FromArgb(24, 24, 24), "Open Shastra",
+                delegate { ThreadPool.QueueUserWorkItem(delegate { ShowShastra("Welcome"); }); });
+            welcomeBox.Show();
+            ThreadPool.QueueUserWorkItem(delegate {
+                Thread.Sleep(1500);   // after Shastra has come forward, put the box back on top
+                try { BeginInvoke((MethodInvoker)delegate { if (welcomeBox != null && !welcomeBox.IsDisposed) { welcomeBox.TopMost = true; welcomeBox.Activate(); } }); } catch { }
+            });
+        }
+        catch { }
     }
     static System.Windows.Forms.Timer updTimer;
     static bool quietStart = false;
@@ -350,6 +368,7 @@ class ShastraGuard : Form
     static void OnArrive(string why)
     {
         ThreadPool.QueueUserWorkItem(delegate { ShowShastra(why); });
+        if (Instance != null) { try { Instance.BeginInvoke((MethodInvoker)delegate { Instance.ShowWelcomeBox(); }); } catch { } }
     }
 
     // ---------- Lock reminder ----------
@@ -766,12 +785,12 @@ class ReminderForm : Form
     }
 }
 
-// The centered box shown when someone returns after 3+ minutes of no movement.
-class AwayForm : Form
+// A centered notice box: colored circle with "!", a title, a message, and one button.
+// Used for "No movement recorded" (red, OK) and "Welcome back" (amber, Open Shastra).
+class NoticeForm : Form
 {
-    public AwayForm(ShastraGuard owner, DateTime start, DateTime end)
+    public NoticeForm(string heading, string message, Color circle, Color mark, string buttonText, MethodInvoker onButton)
     {
-        int mins = (int)Math.Round((end - start).TotalMinutes);
         Text = "Purview Shastra";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
@@ -788,13 +807,14 @@ class AwayForm : Form
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            g.FillEllipse(new SolidBrush(Color.FromArgb(220, 38, 38)), 3, 3, 134, 134);
+            g.FillEllipse(new SolidBrush(circle), 3, 3, 134, 134);
             using (Font bf = new Font("Segoe UI", 70f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (SolidBrush mb = new SolidBrush(mark))
             {
                 StringFormat sf = new StringFormat();
                 sf.Alignment = StringAlignment.Center;
                 sf.LineAlignment = StringAlignment.Center;
-                g.DrawString("!", bf, Brushes.White, new RectangleF(3, 6, 134, 134), sf);
+                g.DrawString("!", bf, mb, new RectangleF(3, 6, 134, 134), sf);
             }
         }
         PictureBox pic = new PictureBox();
@@ -802,35 +822,27 @@ class AwayForm : Form
         pic.Location = new Point(40, 50);
 
         Label title = new Label();
-        title.Text = "No movement recorded";
+        title.Text = heading;
         title.Font = new Font("Segoe UI", 22f, FontStyle.Bold);
         title.ForeColor = Color.FromArgb(232, 184, 74);
         title.SetBounds(210, 48, 520, 40);
 
-        string away = mins == 1 ? "1 minute" : mins + " minutes";
         Label msg = new Label();
-        msg.Text = "You were away for " + away + "\n(" + start.ToString("h:mm tt") + " to " + end.ToString("h:mm tt") + ").\n\nIf that was a break, mark it in\nPurview Shastra.";
+        msg.Text = message;
         msg.Font = new Font("Segoe UI", 15f);
         msg.SetBounds(212, 100, 520, 150);
 
         Controls.Add(pic); Controls.Add(title); Controls.Add(msg);
-        int right = ClientSize.Width - 34, top = 256, h = 52;
 
-        Button openBtn = MakeBtn("Open Shastra", true);
-        openBtn.SetBounds(right - 220, top, 220, h);
-        openBtn.Click += delegate { owner.OpenShastraFromAway(); };
-        Controls.Add(openBtn);
-        AcceptButton = openBtn;
-    }
-
-    static Button MakeBtn(string text, bool primary)
-    {
         Button b = new Button();
-        b.Text = text;
+        b.Text = buttonText;
         b.Font = new Font("Segoe UI", 13f, FontStyle.Bold);
         b.FlatStyle = FlatStyle.Flat;
-        if (primary) { b.BackColor = Color.FromArgb(232, 184, 74); b.ForeColor = Color.Black; }
-        else { b.ForeColor = Color.FromArgb(232, 184, 74); b.FlatAppearance.BorderColor = Color.FromArgb(232, 184, 74); }
-        return b;
+        b.BackColor = Color.FromArgb(232, 184, 74); b.ForeColor = Color.Black;
+        int w = buttonText.Length > 4 ? 220 : 150;
+        b.SetBounds(ClientSize.Width - 34 - w, 256, w, 52);
+        b.Click += delegate { Close(); if (onButton != null) onButton(); };
+        Controls.Add(b);
+        AcceptButton = b;
     }
 }

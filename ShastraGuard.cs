@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.7.2";
+    public const string CurrentVersion = "1.8.0";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -73,6 +73,12 @@ class ShastraGuard : Form
     const int IdleMinutes = 3;                 // a no-movement period starts after this many minutes
     static DateTime idleStart = DateTime.MinValue;   // start of the current no-movement period, if any
     static DateTime lockStart = DateTime.MinValue;   // when the screen was locked, if it is
+
+    // ---- send activity to Purview Shastra ----
+    const string GuardUrl = "https://qhbgshnqugxqiwdywsas.supabase.co/rest/v1/rpc/guard_ping";
+    const string GuardKey = "sb_publishable_2aOo5c5pq3J33nK8hVIb0w_gjj6A4n7"; // Shastra's public key (same one the Shastra website uses)
+    const string TokenPath = @"C:\Users\Public\Documents\ShastraGuard-id.txt"; // this computer's token, shared by every user on it
+    static string machineToken = null;
 
     static uint IdleSeconds()
     {
@@ -84,10 +90,10 @@ class ShastraGuard : Form
 
     static void WriteActivityRow(DateTime start, DateTime end, string type)
     {
+        int mins = (int)Math.Round((end - start).TotalMinutes);
+        if (mins < 1) return;
         try
         {
-            int mins = (int)Math.Round((end - start).TotalMinutes);
-            if (mins < 1) return;
             if (!File.Exists(ActivityCsv))
                 File.AppendAllText(ActivityCsv, "Date,Start,End,Minutes,Type,User\r\n");
             File.AppendAllText(ActivityCsv, string.Format("{0},{1},{2},{3},{4},{5}\r\n",
@@ -95,6 +101,105 @@ class ShastraGuard : Form
                 mins, type, Environment.UserName));
         }
         catch { }
+        // Also send it to Purview Shastra. "No movement" becomes idle, "Screen locked" becomes locked.
+        string kind = type == "No movement" ? "idle" : (type == "Screen locked" ? "locked" : null);
+        if (kind != null) GuardPing(kind, end, start, end, mins, null);
+    }
+
+    // ---------------- Send activity to Purview Shastra (guard_ping) ----------------
+    // Guard reports its own computer to Shastra. Each computer has a random token kept in
+    // ShastraGuard-id.txt; Shastra ties the first token it sees to this computer's name, so no
+    // other computer can report as this one. These calls never block the app and never show an error.
+    static string MachineToken()
+    {
+        if (machineToken != null) return machineToken;
+        try
+        {
+            if (!File.Exists(TokenPath))
+            {
+                string t = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"); // 64 characters
+                try { using (FileStream fs = new FileStream(TokenPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { byte[] b = Encoding.ASCII.GetBytes(t); fs.Write(b, 0, b.Length); } }
+                catch { } // another user on this PC created it at the same moment: read theirs below
+            }
+            string got = File.ReadAllText(TokenPath).Trim();
+            if (got.Length >= 20) machineToken = got;
+        }
+        catch { }
+        return machineToken;
+    }
+
+    static string Iso(DateTime dt) { return dt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"); }
+
+    static string ShortText(string s, int n) { if (s == null) return ""; s = s.Replace("\r", " ").Replace("\n", " "); return s.Length > n ? s.Substring(0, n) : s; }
+
+    static string JsonStr(string s)
+    {
+        if (s == null) return "null";
+        StringBuilder b = new StringBuilder("\"");
+        foreach (char c in s)
+        {
+            if (c == '"' || c == '\\') b.Append('\\').Append(c);
+            else if (c == '\n') b.Append("\\n");
+            else if (c == '\r') b.Append("\\r");
+            else if (c == '\t') b.Append("\\t");
+            else if (c < 32) b.Append("\\u").Append(((int)c).ToString("x4"));
+            else b.Append(c);
+        }
+        b.Append("\"");
+        return b.ToString();
+    }
+
+    static string BuildPingJson(string tok, string kind, DateTime? at, DateTime? from, DateTime? to, int? minutes, string detail)
+    {
+        StringBuilder j = new StringBuilder();
+        j.Append("{");
+        j.Append("\"p_machine\":").Append(JsonStr(Environment.MachineName));
+        j.Append(",\"p_user\":").Append(JsonStr(Environment.UserName));
+        j.Append(",\"p_token\":").Append(JsonStr(tok));
+        j.Append(",\"p_version\":").Append(JsonStr(CurrentVersion));
+        j.Append(",\"p_kind\":").Append(JsonStr(kind));
+        if (at.HasValue) j.Append(",\"p_at\":").Append(JsonStr(Iso(at.Value)));
+        if (from.HasValue) j.Append(",\"p_from\":").Append(JsonStr(Iso(from.Value)));
+        if (to.HasValue) j.Append(",\"p_to\":").Append(JsonStr(Iso(to.Value)));
+        if (minutes.HasValue) j.Append(",\"p_minutes\":").Append(minutes.Value);
+        if (!string.IsNullOrEmpty(detail)) j.Append(",\"p_detail\":").Append(JsonStr(detail));
+        j.Append("}");
+        return j.ToString();
+    }
+
+    static void PostPing(string json, int timeoutMs, string kind)
+    {
+        try
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
+            using (TimedWebClient wc = new TimedWebClient())
+            {
+                wc.TimeoutMs = timeoutMs;
+                wc.Headers["apikey"] = GuardKey;
+                wc.Headers["Authorization"] = "Bearer " + GuardKey;
+                wc.Headers[HttpRequestHeader.ContentType] = "application/json";
+                string resp = wc.UploadString(GuardUrl, "POST", json);
+                if (kind != "alive") Log("Sent to Shastra (" + kind + "): " + ShortText(resp, 160));
+            }
+        }
+        catch (Exception e) { if (kind != "alive") Log("Could not send " + kind + " to Shastra: " + e.Message); }
+    }
+
+    // Fire and forget: used for start, alive, idle and locked.
+    static void GuardPing(string kind, DateTime? at, DateTime? from, DateTime? to, int? minutes, string detail)
+    {
+        string tok = MachineToken();
+        if (string.IsNullOrEmpty(tok)) return;
+        string json = BuildPingJson(tok, kind, at, from, to, minutes, detail);
+        ThreadPool.QueueUserWorkItem(delegate { PostPing(json, 8000, kind); });
+    }
+
+    // Waits for the send (up to 4 seconds): used at shut down, when the app is about to close.
+    static void GuardPingNow(string kind, DateTime? at, DateTime? from, DateTime? to, int? minutes, string detail)
+    {
+        string tok = MachineToken();
+        if (string.IsNullOrEmpty(tok)) return;
+        PostPing(BuildPingJson(tok, kind, at, from, to, minutes, detail), 4000, kind);
     }
 
     // Runs every 30 seconds: notices when the desk has had no movement for 3 minutes or more,
@@ -527,6 +632,7 @@ class ShastraGuard : Form
         Log("Windows + L reminder: " + (winLControlled ? "ON" : "off (admin permission not given yet, Windows + L locks normally)"));
         hotkeyOk = RegisterHotKey(Handle, 1, 0x0001 | 0x0002 | 0x4000, 0x4C); // Ctrl + Alt + L
         Log("Shastra Guard " + CurrentVersion + " started (Ctrl + Alt + L " + (hotkeyOk ? "ready" : "NOT available, another app uses it") + ")");
+        GuardPing("start", DateTime.Now, null, null, null, "Shastra Guard " + CurrentVersion + " started");
         System.Windows.Forms.Timer beat = new System.Windows.Forms.Timer();
         beat.Interval = 60000;
         beat.Tick += delegate { Heartbeat(); };
@@ -541,6 +647,10 @@ class ShastraGuard : Form
         act.Interval = 30000;
         act.Tick += delegate { CheckActivity(); };
         act.Start();
+        System.Windows.Forms.Timer alive = new System.Windows.Forms.Timer();
+        alive.Interval = 5 * 60 * 1000;   // tell Shastra this computer is still running, every 5 minutes
+        alive.Tick += delegate { GuardPing("alive", null, null, null, null, null); };
+        alive.Start();
     }
 
     void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -628,6 +738,7 @@ class ShastraGuard : Form
             {
                 Log("Shut down anyway was used: Shastra reminder skipped");
                 try { File.AppendAllText(SkipLog, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + Environment.UserName + "  shut down anyway, Shastra reminder skipped" + Environment.NewLine); } catch { }
+                GuardPingNow("missed_punch_out", DateTime.Now, null, null, null, "shut down or signed out while still punched in");
             }
             else Log("Session is ending now");
         }
@@ -844,5 +955,17 @@ class NoticeForm : Form
         b.Click += delegate { Close(); if (onButton != null) onButton(); };
         Controls.Add(b);
         AcceptButton = b;
+    }
+}
+
+// A WebClient with a short timeout, so a slow or missing network never holds up Shastra Guard.
+class TimedWebClient : WebClient
+{
+    public int TimeoutMs = 100000;
+    protected override WebRequest GetWebRequest(Uri address)
+    {
+        WebRequest w = base.GetWebRequest(address);
+        if (w != null) w.Timeout = TimeoutMs;
+        return w;
     }
 }

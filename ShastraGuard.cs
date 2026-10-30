@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.0";
+    public const string CurrentVersion = "1.8.1";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -215,22 +215,58 @@ class ShastraGuard : Form
         else if (idleStart != DateTime.MinValue)
         {
             DateTime end = DateTime.Now.AddSeconds(-idle);
-            WriteActivityRow(idleStart, end, "No movement");
-            if (Instance != null) Instance.ShowAwayBox(idleStart, end);
+            DateTime start = idleStart;
+            WriteActivityRow(start, end, "No movement");
             idleStart = DateTime.MinValue;
+            // Time spent on a break in Shastra is not idle: ask Shastra how much of this period was
+            // outside a break, and only show the box for that part (nothing if it was all break).
+            ThreadPool.QueueUserWorkItem(delegate {
+                int net = NetIdleMinutes(start, end);
+                if (net < 0) net = (int)Math.Round((end - start).TotalMinutes);   // Shastra not reachable: show it as before
+                if (net < IdleMinutes) { Log("No movement " + start.ToString("HH:mm") + "-" + end.ToString("HH:mm") + " was during a break: no box shown"); return; }
+                try { if (Instance != null) Instance.BeginInvoke((MethodInvoker)delegate { Instance.ShowAwayBox(start, end, net); }); } catch { }
+            });
         }
+    }
+
+    // Minutes of a no-movement period that fell outside a Shastra break. -1 if Shastra could not be asked.
+    const string BreakCheckUrl = "https://qhbgshnqugxqiwdywsas.supabase.co/rest/v1/rpc/guard_break_check";
+    static int NetIdleMinutes(DateTime from, DateTime to)
+    {
+        string tok = MachineToken();
+        if (string.IsNullOrEmpty(tok)) return -1;
+        try
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
+            string json = "{\"p_machine\":" + JsonStr(Environment.MachineName) + ",\"p_token\":" + JsonStr(tok)
+                + ",\"p_from\":" + JsonStr(Iso(from)) + ",\"p_to\":" + JsonStr(Iso(to)) + "}";
+            using (TimedWebClient wc = new TimedWebClient())
+            {
+                wc.TimeoutMs = 6000;
+                wc.Headers["apikey"] = GuardKey;
+                wc.Headers["Authorization"] = "Bearer " + GuardKey;
+                wc.Headers[HttpRequestHeader.ContentType] = "application/json";
+                string resp = wc.UploadString(BreakCheckUrl, "POST", json);
+                if (resp.IndexOf("\"linked\": true") < 0 && resp.IndexOf("\"linked\":true") < 0) return -1;
+                System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(resp, "\"net_min\"\\s*:\\s*(-?\\d+)");
+                if (m.Success) return int.Parse(m.Groups[1].Value);
+            }
+        }
+        catch (Exception e) { Log("Break check failed: " + e.Message); }
+        return -1;
     }
 
     NoticeForm awayBox;
     // Information only: the period is already over, so there is nothing to mark. OK closes it.
-    void ShowAwayBox(DateTime start, DateTime end)
+    void ShowAwayBox(DateTime start, DateTime end, int netMins)
     {
         try
         {
             int mins = (int)Math.Round((end - start).TotalMinutes);
-            string away = mins == 1 ? "1 minute" : mins + " minutes";
+            string away = netMins == 1 ? "1 minute" : netMins + " minutes";
             string text = "You were away from " + start.ToString("h:mm tt") + " to " + end.ToString("h:mm tt")
-                + "\n(" + away + ").\n\nThis is recorded as idle time in your day,\nseparate from breaks and time on floor.";
+                + (netMins < mins ? "\n(" + away + " outside your break)." : "\n(" + away + ").")
+                + "\n\nThis is recorded as idle time in your day,\nseparate from breaks and time on floor.";
             if (awayBox != null && !awayBox.IsDisposed) awayBox.Close();
             awayBox = new NoticeForm("No movement recorded", text, Color.FromArgb(220, 38, 38), Color.White, "OK", null);
             awayBox.Show();

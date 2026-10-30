@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.1";
+    public const string CurrentVersion = "1.8.2";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -200,6 +200,52 @@ class ShastraGuard : Form
         string tok = MachineToken();
         if (string.IsNullOrEmpty(tok)) return;
         PostPing(BuildPingJson(tok, kind, at, from, to, minutes, detail), 4000, kind);
+    }
+
+    // ---- link this computer to whoever is signed in to Shastra ----
+    // When someone signs in, the Shastra page puts a short code in its window title, written with
+    // invisible characters after the words "Purview Shastra". Guard reads it and sends it to Shastra,
+    // which links this computer to that person. A different person signing in sends a new code.
+    static string lastClaim = null;
+    static DateTime lastClaimAt = DateTime.MinValue;
+    static string ReadLinkCode()
+    {
+        string found = null;
+        EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            if (!IsWindowVisible(h)) return true;
+            StringBuilder t = new StringBuilder(512); GetWindowText(h, t, 512);
+            string title = t.ToString();
+            if (!title.StartsWith("Purview Shastra", StringComparison.OrdinalIgnoreCase)) return true;
+            int i = title.IndexOf('\u2063');
+            if (i < 0) return true;
+            StringBuilder bits = new StringBuilder();
+            for (int k = i + 1; k < title.Length; k++)
+            {
+                if (title[k] == '\u200B') bits.Append('0');
+                else if (title[k] == '\u200C') bits.Append('1');
+                else break;
+            }
+            if (bits.Length != 32) return true;
+            StringBuilder hex = new StringBuilder();
+            for (int k = 0; k < 32; k += 4) hex.Append(Convert.ToInt32(bits.ToString(k, 4), 2).ToString("x"));
+            found = hex.ToString();
+            return false;   // first Shastra window with a code is enough
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    static void CheckLinkCode()
+    {
+        try
+        {
+            string code = ReadLinkCode();
+            if (code == null) return;
+            if (code == lastClaim && (DateTime.Now - lastClaimAt).TotalMinutes < 30) return;
+            lastClaim = code; lastClaimAt = DateTime.Now;
+            GuardPing("claim", DateTime.Now, null, null, null, code);
+        }
+        catch { }
     }
 
     // Runs every 30 seconds: notices when the desk has had no movement for 3 minutes or more,
@@ -681,7 +727,7 @@ class ShastraGuard : Form
         updTimer.Start();
         System.Windows.Forms.Timer act = new System.Windows.Forms.Timer();
         act.Interval = 30000;
-        act.Tick += delegate { CheckActivity(); };
+        act.Tick += delegate { CheckActivity(); CheckLinkCode(); };
         act.Start();
         System.Windows.Forms.Timer alive = new System.Windows.Forms.Timer();
         alive.Interval = 5 * 60 * 1000;   // tell Shastra this computer is still running, every 5 minutes

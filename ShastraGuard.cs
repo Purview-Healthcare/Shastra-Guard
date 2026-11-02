@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.2";
+    public const string CurrentVersion = "1.8.3";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -248,31 +248,74 @@ class ShastraGuard : Form
         catch { }
     }
 
+    // Sleep and wake: time the computer spends asleep is not "no movement". The 30-second check stops
+    // while the computer sleeps, so a long gap between two checks means it was asleep: the open
+    // no-movement period is closed at the last check, and a new one can only start after waking.
+    static DateTime lastCheck = DateTime.MinValue;
+    static DateTime awakeSince = DateTime.MinValue;
+
+    static void OnPowerMode(object sender, PowerModeChangedEventArgs e)
+    {
+        try
+        {
+            if (e.Mode == PowerModes.Suspend)
+            {
+                if (idleStart != DateTime.MinValue) { DateTime st = idleStart; idleStart = DateTime.MinValue; FinishIdle(st, DateTime.Now); }
+                Log("Going to sleep");
+            }
+            else if (e.Mode == PowerModes.Resume)
+            {
+                idleStart = DateTime.MinValue; awakeSince = DateTime.Now; lastCheck = DateTime.Now;
+                Log("Woke up");
+            }
+        }
+        catch { }
+    }
+
     // Runs every 30 seconds: notices when the desk has had no movement for 3 minutes or more,
     // and records the period (date, start, end, minutes) once movement comes back.
     static void CheckActivity()
     {
+        DateTime now = DateTime.Now;
+        if (lastCheck != DateTime.MinValue && (now - lastCheck).TotalMinutes > 3)
+        {
+            // the computer was asleep since the last check
+            if (idleStart != DateTime.MinValue) { DateTime st = idleStart; idleStart = DateTime.MinValue; FinishIdle(st, lastCheck); }
+            awakeSince = now;
+        }
+        lastCheck = now;
         if (lockStart != DateTime.MinValue) return;   // the lock/unlock path records locked time
         uint idle = IdleSeconds();
         if (idle >= IdleMinutes * 60)
         {
-            if (idleStart == DateTime.MinValue) idleStart = DateTime.Now.AddSeconds(-idle);
+            if (idleStart == DateTime.MinValue)
+            {
+                DateTime st = now.AddSeconds(-idle);
+                if (st < awakeSince) st = awakeSince;   // never count from before the computer woke up
+                if ((now - st).TotalMinutes >= IdleMinutes) idleStart = st;
+            }
         }
         else if (idleStart != DateTime.MinValue)
         {
-            DateTime end = DateTime.Now.AddSeconds(-idle);
-            DateTime start = idleStart;
-            WriteActivityRow(start, end, "No movement");
+            DateTime end = now.AddSeconds(-idle);
+            DateTime st = idleStart;
             idleStart = DateTime.MinValue;
-            // Time spent on a break in Shastra is not idle: ask Shastra how much of this period was
-            // outside a break, and only show the box for that part (nothing if it was all break).
-            ThreadPool.QueueUserWorkItem(delegate {
-                int net = NetIdleMinutes(start, end);
-                if (net < 0) net = (int)Math.Round((end - start).TotalMinutes);   // Shastra not reachable: show it as before
-                if (net < IdleMinutes) { Log("No movement " + start.ToString("HH:mm") + "-" + end.ToString("HH:mm") + " was during a break: no box shown"); return; }
-                try { if (Instance != null) Instance.BeginInvoke((MethodInvoker)delegate { Instance.ShowAwayBox(start, end, net); }); } catch { }
-            });
+            if (end > st) FinishIdle(st, end);
         }
+    }
+
+    // Records a finished no-movement period and, if any of it counts as idle, shows the box.
+    static void FinishIdle(DateTime start, DateTime end)
+    {
+        WriteActivityRow(start, end, "No movement");
+        // Shastra works out how much of the period counts: time on a break, or outside the
+        // person's punch-in to punch-out, is not idle. The box shows only the part that counts.
+        ThreadPool.QueueUserWorkItem(delegate {
+            int net = NetIdleMinutes(start, end);
+            if (net < 0) net = (int)Math.Round((end - start).TotalMinutes);   // Shastra not reachable: show it as before
+            if (net < IdleMinutes) { Log("No movement " + start.ToString("HH:mm") + "-" + end.ToString("HH:mm") + ": on a break or off shift, no box shown"); return; }
+            try { if (Instance != null) Instance.BeginInvoke((MethodInvoker)delegate { Instance.ShowAwayBox(start, end, net); }); } catch { }
+        });
     }
 
     // Minutes of a no-movement period that fell outside a Shastra break. -1 if Shastra could not be asked.
@@ -311,7 +354,7 @@ class ShastraGuard : Form
             int mins = (int)Math.Round((end - start).TotalMinutes);
             string away = netMins == 1 ? "1 minute" : netMins + " minutes";
             string text = "You were away from " + start.ToString("h:mm tt") + " to " + end.ToString("h:mm tt")
-                + (netMins < mins ? "\n(" + away + " outside your break)." : "\n(" + away + ").")
+                + (netMins < mins ? "\n(" + away + " counted, outside breaks and off-shift time)." : "\n(" + away + ").")
                 + "\n\nThis is recorded as idle time in your day,\nseparate from breaks and time on floor.";
             if (awayBox != null && !awayBox.IsDisposed) awayBox.Close();
             awayBox = new NoticeForm("No movement recorded", text, Color.FromArgb(220, 38, 38), Color.White, "OK", null);
@@ -699,6 +742,7 @@ class ShastraGuard : Form
         Size = new Size(1, 1);
         Opacity = 0;
         SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.PowerModeChanged += OnPowerMode;
     }
 
     protected override void OnShown(EventArgs e)

@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.3";
+    public const string CurrentVersion = "1.8.4";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -167,7 +167,12 @@ class ShastraGuard : Form
         return j.ToString();
     }
 
-    static void PostPing(string json, int timeoutMs, string kind)
+    // Set when an idle or locked period could not be sent (no internet, Shastra unreachable).
+    // The next successful check-in resends the recent periods from the activity file; Shastra
+    // keeps each period once, so anything already received is not counted twice.
+    static volatile bool sendFailed = false;
+
+    static bool PostPing(string json, int timeoutMs, string kind)
     {
         try
         {
@@ -179,10 +184,51 @@ class ShastraGuard : Form
                 wc.Headers["Authorization"] = "Bearer " + GuardKey;
                 wc.Headers[HttpRequestHeader.ContentType] = "application/json";
                 string resp = wc.UploadString(GuardUrl, "POST", json);
-                if (kind != "alive") Log("Sent to Shastra (" + kind + "): " + ShortText(resp, 160));
+                if (kind != "alive" && !kind.StartsWith("resend")) Log("Sent to Shastra (" + kind + "): " + ShortText(resp, 160));
+                return true;
             }
         }
-        catch (Exception e) { if (kind != "alive") Log("Could not send " + kind + " to Shastra: " + e.Message); }
+        catch (Exception e)
+        {
+            if (kind != "alive") Log("Could not send " + kind + " to Shastra: " + e.Message);
+            if (kind == "idle" || kind == "locked") sendFailed = true;
+            return false;
+        }
+    }
+
+    // Sends again every no-movement and screen-locked period from the last 'hours' hours.
+    static int resending = 0;
+    static void ResendRecent(int hours, string why)
+    {
+        if (Interlocked.Exchange(ref resending, 1) == 1) return;
+        try
+        {
+            string tok = MachineToken();
+            if (string.IsNullOrEmpty(tok) || !File.Exists(ActivityCsv)) return;
+            string[] lines;
+            using (FileStream fs = new FileStream(ActivityCsv, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (StreamReader sr = new StreamReader(fs)) lines = sr.ReadToEnd().Split('\n');
+            DateTime since = DateTime.Now.AddHours(-hours);
+            int sent = 0, failed = 0;
+            foreach (string raw in lines)
+            {
+                string[] c = raw.Trim().Split(',');
+                if (c.Length < 5) continue;
+                string kind = c[4] == "No movement" ? "idle" : (c[4] == "Screen locked" ? "locked" : null);
+                if (kind == null) continue;
+                DateTime st, en; int mins;
+                if (!DateTime.TryParse(c[0] + " " + c[1], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeLocal, out st)) continue;
+                if (!DateTime.TryParse(c[0] + " " + c[2], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeLocal, out en)) continue;
+                if (en < st) en = en.AddDays(1);
+                if (en < since || !int.TryParse(c[3], out mins)) continue;
+                if (PostPing(BuildPingJson(tok, kind, en, st, en, mins, null), 8000, "resend " + kind)) sent++; else failed++;
+                if (failed > 0) break;   // still offline: try again later
+            }
+            if (failed == 0) sendFailed = false;
+            Log("Resent recent activity (" + why + "): " + sent + " sent" + (failed > 0 ? ", still offline" : ""));
+        }
+        catch (Exception e) { Log("Resend failed: " + e.Message); }
+        finally { Interlocked.Exchange(ref resending, 0); }
     }
 
     // Fire and forget: used for start, alive, idle and locked.
@@ -775,7 +821,12 @@ class ShastraGuard : Form
         act.Start();
         System.Windows.Forms.Timer alive = new System.Windows.Forms.Timer();
         alive.Interval = 5 * 60 * 1000;   // tell Shastra this computer is still running, every 5 minutes
-        alive.Tick += delegate { GuardPing("alive", null, null, null, null, null); };
+        alive.Tick += delegate {
+            GuardPing("alive", null, null, null, null, null);
+            if (sendFailed) ThreadPool.QueueUserWorkItem(delegate { ResendRecent(24, "after a failed send"); });
+        };
+        // once at start-up: anything from the last day that did not get through before
+        ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(20000); ResendRecent(24, "start-up"); });
         alive.Start();
     }
 

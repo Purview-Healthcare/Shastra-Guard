@@ -65,7 +65,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.4";
+    public const string CurrentVersion = "1.8.5";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -241,11 +241,43 @@ class ShastraGuard : Form
     }
 
     // Waits for the send (up to 4 seconds): used at shut down, when the app is about to close.
-    static void GuardPingNow(string kind, DateTime? at, DateTime? from, DateTime? to, int? minutes, string detail)
+    static bool GuardPingNow(string kind, DateTime? at, DateTime? from, DateTime? to, int? minutes, string detail)
     {
         string tok = MachineToken();
-        if (string.IsNullOrEmpty(tok)) return;
-        PostPing(BuildPingJson(tok, kind, at, from, to, minutes, detail), 4000, kind);
+        if (string.IsNullOrEmpty(tok)) return false;
+        return PostPing(BuildPingJson(tok, kind, at, from, to, minutes, detail), 4000, kind);
+    }
+
+    // ---- shut down or sign out ----
+    // Windows can close Shastra Guard before it gets to report a shut down (for example when someone
+    // presses "Shut down anyway"). So the moment a shut down starts, Guard writes the time to a small
+    // file; if the shut down is cancelled the file is removed, and if Guard could not report it in time,
+    // it reports it on the next start-up. Shastra counts it as unusual activity only if the person
+    // was punched in and not on a break at that time.
+    static bool markerAtStart = false;
+    const string ShutdownMarker = @"C:\Users\Public\Documents\ShastraGuard-shutdown.txt";
+    static void MarkShutdown()
+    {
+        try { if (!File.Exists(ShutdownMarker)) File.WriteAllText(ShutdownMarker, DateTime.Now.ToString("o")); } catch { }
+    }
+    static DateTime? ShutdownMarkTime()
+    {
+        try
+        {
+            if (!File.Exists(ShutdownMarker)) return null;
+            DateTime t;
+            if (DateTime.TryParse(File.ReadAllText(ShutdownMarker).Trim(), null, System.Globalization.DateTimeStyles.RoundtripKind, out t)) return t;
+        }
+        catch { }
+        return null;
+    }
+    static void ClearShutdownMark() { try { if (File.Exists(ShutdownMarker)) File.Delete(ShutdownMarker); } catch { } }
+    static void ReportShutdown(string why)
+    {
+        DateTime? t = ShutdownMarkTime();
+        if (t == null) return;
+        if ((DateTime.Now - t.Value).TotalDays > 7) { ClearShutdownMark(); return; }
+        if (GuardPingNow("missed_punch_out", t.Value, null, null, null, "shut down or signed out (" + why + ")")) ClearShutdownMark();
     }
 
     // ---- link this computer to whoever is signed in to Shastra ----
@@ -824,9 +856,11 @@ class ShastraGuard : Form
         alive.Tick += delegate {
             GuardPing("alive", null, null, null, null, null);
             if (sendFailed) ThreadPool.QueueUserWorkItem(delegate { ResendRecent(24, "after a failed send"); });
+            if (markerAtStart && File.Exists(ShutdownMarker)) ThreadPool.QueueUserWorkItem(delegate { ReportShutdown("reported at start-up, retried"); });
         };
         // once at start-up: anything from the last day that did not get through before
-        ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(20000); ResendRecent(24, "start-up"); });
+        markerAtStart = File.Exists(ShutdownMarker);   // a shut down from before this start that was not reported yet
+        ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(20000); ResendRecent(24, "start-up"); ReportShutdown("reported at start-up"); });
         alive.Start();
     }
 
@@ -905,6 +939,7 @@ class ShastraGuard : Form
         if (m.Msg == WM_HOTKEY || (uint)m.Msg == LockMsg) { ShowReminder(); return; }
         if (m.Msg == WM_QUERYENDSESSION)
         {
+            MarkShutdown();
             Log("Windows is asking to end the session (flags " + m.LParam.ToInt64().ToString("X") + ")");
             m.Result = ShouldAllowEnd(m.LParam.ToInt64()) ? (IntPtr)1 : IntPtr.Zero;
             return;
@@ -915,12 +950,13 @@ class ShastraGuard : Form
             {
                 Log("Shut down anyway was used: Shastra reminder skipped");
                 try { File.AppendAllText(SkipLog, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + Environment.UserName + "  shut down anyway, Shastra reminder skipped" + Environment.NewLine); } catch { }
-                GuardPingNow("missed_punch_out", DateTime.Now, null, null, null, "shut down or signed out while still punched in");
+                MarkShutdown(); ReportShutdown("shut down anyway");
             }
-            else Log("Session is ending now");
+            else { Log("Session is ending now"); MarkShutdown(); ReportShutdown("session ending"); }
         }
         if (m.Msg == WM_ENDSESSION && m.WParam == IntPtr.Zero)
         {
+            ClearShutdownMark();
             Log("Shut down was cancelled");
             ClearBlock();  // shut down was cancelled: back to normal
             if (winLControlled) SetWinLDisabled(true);

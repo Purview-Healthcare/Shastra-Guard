@@ -2,6 +2,7 @@
 // Runs quietly in the background from login.
 //  - Windows + L: the first press brings Purview Shastra to the front with a reminder,
 //    the second press (or "Lock now") locks.
+//    1.8.6: when Shastra's window says "On break" (or not on shift), the first press locks at once.
 //  - Ctrl + Alt + L: same reminder, then lock.
 //  - At login and unlock: brings Purview Shastra to the front (opens it if closed).
 //  - Shut down / restart / sign out: the first try is paused. Windows shows its own page with
@@ -65,7 +66,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.5";
+    public const string CurrentVersion = "1.8.6";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -554,8 +555,17 @@ class ShastraGuard : Form
             LockNow();
             return;
         }
+        // 1.8.6: Shastra writes what the person is doing into its window title ("Purview Shastra — On break 05:12",
+        // "— Working", "— Punched out" ...). On a break, or not on shift, there is nothing to remind: lock at once.
+        string st = ShastraState();
+        if (st == "break" || st == "off")
+        {
+            Log("Windows + L pressed while Shastra says " + st + ": locking");
+            LockNow();
+            return;
+        }
         lastWinL = DateTime.Now;
-        Log("Windows + L pressed: showing Shastra reminder");
+        Log("Windows + L pressed: showing Shastra reminder (Shastra says " + (st ?? "nothing") + ")");
         ShowReminder();
     }
 
@@ -582,6 +592,32 @@ class ShastraGuard : Form
             if (p == "chrome" || p == "msedge" || p == "chrome_proxy") found.Add(h);
             return true;
         }, IntPtr.Zero);
+        return found;
+    }
+
+    // What the Shastra page says the person is doing, read from its window title (app window or a browser tab):
+    // "break", "working", "off" (punched out, not punched in, off today), or null when no Shastra window is open
+    // or the page is older than 16 Nov 2026 and does not say.
+    static string ShastraState()
+    {
+        string found = null;
+        try
+        {
+            EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                StringBuilder t = new StringBuilder(512); GetWindowText(h, t, 512);
+                string title = t.ToString();
+                if (!title.StartsWith("Purview Shastra", StringComparison.OrdinalIgnoreCase)) return true;
+                string s = title.ToLowerInvariant();
+                string st = s.Contains("on break") ? "break"
+                          : (s.Contains("punched out") || s.Contains("not punched in") || s.Contains("off today")) ? "off"
+                          : s.Contains("working") ? "working" : null;
+                if (st == null) return true;
+                if (found == null || st == "break") found = st;   // a break anywhere wins
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { }
         return found;
     }
 
@@ -936,7 +972,7 @@ class ShastraGuard : Form
     const int WM_QUERYENDSESSION = 0x11, WM_ENDSESSION = 0x16, WM_HOTKEY = 0x312;
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_HOTKEY || (uint)m.Msg == LockMsg) { ShowReminder(); return; }
+        if (m.Msg == WM_HOTKEY || (uint)m.Msg == LockMsg) { OnWinL(); return; }
         if (m.Msg == WM_QUERYENDSESSION)
         {
             MarkShutdown();

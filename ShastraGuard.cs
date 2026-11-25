@@ -2,6 +2,8 @@
 // Runs quietly in the background from login.
 //  - Windows + L: the first press brings Purview Shastra to the front with a reminder,
 //    the second press (or "Lock now") locks.
+//    1.8.7: a self-update that does not install waits 6 hours before trying again (it used to retry every 90 seconds,
+//           restarting Guard each time), says why in its start report, and the swap retries the copy and checks it.
 //    1.8.6: when Shastra's window says "On break" (or not on shift), the first press locks at once.
 //  - Ctrl + Alt + L: same reminder, then lock.
 //  - At login and unlock: brings Purview Shastra to the front (opens it if closed).
@@ -29,7 +31,7 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("Purview Shastra")]
 [assembly: System.Reflection.AssemblyProduct("Purview Shastra")]
 [assembly: System.Reflection.AssemblyCompany("Purview")]
-[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.7.0")]
 
 class ShastraGuard : Form
 {
@@ -66,7 +68,7 @@ class ShastraGuard : Form
     [DllImport("kernel32.dll")] static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
     const string LogPath = @"C:\Users\Public\Documents\ShastraPunchIn-log.txt";
-    public const string CurrentVersion = "1.8.6";
+    public const string CurrentVersion = "1.8.7";
     const string UpdateBase = "https://raw.githubusercontent.com/Purview-Healthcare/Shastra-Guard/main/";
     static bool updating = false;
     // ---- activity record (no-movement and screen-locked periods) ----
@@ -784,6 +786,43 @@ class ShastraGuard : Form
         catch { return -1; }
     }
 
+    // 1.8.7: an update that does not install must not be retried every 90 seconds. Before swapping, Guard writes
+    // update\attempt.txt ("version|time"). If Guard starts again still on the old version, the swap failed: it
+    // waits 6 hours before trying that version again, and says so in its start report so the failure shows in Shastra.
+    // (Seen 23 to 25 Nov 2026: one computer restarted Guard every 96 seconds for two days on a failed update.)
+    static string AttemptPath() { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), @"update\attempt.txt"); }
+    static string SwapLogPath() { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), @"update\swap-log.txt"); }
+    // The version and time of the last update attempt, or null.
+    static string LastAttempt(out DateTime when)
+    {
+        when = DateTime.MinValue;
+        try
+        {
+            if (!File.Exists(AttemptPath())) return null;
+            string[] p = File.ReadAllText(AttemptPath()).Trim().Split('|');
+            if (p.Length < 2) return null;
+            if (!DateTime.TryParse(p[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out when)) return null;
+            return p[0].Trim();
+        }
+        catch { return null; }
+    }
+    // Called once at start: what happened to the last update. Returns text for the start report, or null.
+    static string UpdateOutcome()
+    {
+        DateTime when; string v = LastAttempt(out when);
+        if (v == null) return null;
+        if (VersionNumber(v) <= VersionNumber(CurrentVersion))
+        {
+            try { File.Delete(AttemptPath()); } catch { }
+            return null;   // it installed (or an older attempt): nothing to report
+        }
+        string log = "";
+        try { if (File.Exists(SwapLogPath())) log = ShortText(File.ReadAllText(SwapLogPath()).Trim(), 160).Trim(); } catch { }
+        string msg = "update to " + v + " did not install" + (log.Length > 0 ? ": " + log : "");
+        Log("Update " + v + " did not install (tried " + when.ToString("yyyy-MM-dd HH:mm") + ")" + (log.Length > 0 ? ": " + log : ""));
+        return msg;
+    }
+
     static void CheckForUpdate()
     {
         if (updating) return;
@@ -797,6 +836,12 @@ class ShastraGuard : Form
                 wc.Headers["Cache-Control"] = "no-cache";
                 string latest = wc.DownloadString(UpdateBase + "version.txt?t=" + DateTime.Now.Ticks).Trim();
                 if (VersionNumber(latest) <= VersionNumber(CurrentVersion)) return;
+                DateTime tried; string triedVer = LastAttempt(out tried);
+                if (triedVer == latest && (DateTime.Now - tried).TotalHours < 6)
+                {
+                    Log("Update " + latest + " did not install at " + tried.ToString("HH:mm") + "; trying again after " + tried.AddHours(6).ToString("HH:mm"));
+                    return;
+                }
                 Log("Update available: " + latest + " (running " + CurrentVersion + ")");
                 updating = true;
                 Directory.CreateDirectory(upd);
@@ -826,15 +871,27 @@ class ShastraGuard : Form
                 string outp = b.StandardOutput.ReadToEnd() + b.StandardError.ReadToEnd();
                 b.WaitForExit(120000);
                 if (!File.Exists(newExe) || new FileInfo(newExe).Length < 20000) { Log("Update build failed: " + outp.Trim()); updating = false; return; }
-                string swap = Path.Combine(upd, "swap.cmd");
+                string swap = Path.Combine(upd, "swap.cmd"), slog = SwapLogPath();
+                string exe = dir + "\\ShastraGuard.exe";
                 File.WriteAllText(swap,
                     "@echo off\r\n" +
-                    "timeout /t 2 /nobreak >nul\r\n" +
+                    "setlocal enabledelayedexpansion\r\n" +
+                    "ping -n 3 127.0.0.1 >nul\r\n" +
                     "taskkill /im ShastraGuard.exe /f >nul 2>&1\r\n" +
-                    "timeout /t 2 /nobreak >nul\r\n" +
-                    "copy /y \"" + dir + "\\ShastraGuard.exe\" \"" + dir + "\\ShastraGuard.prev.exe\" >nul\r\n" +
-                    "copy /y \"" + newExe + "\" \"" + dir + "\\ShastraGuard.exe\" >nul\r\n" +
-                    "start \"\" \"" + dir + "\\ShastraGuard.exe\" --quiet\r\n");
+                    "ping -n 3 127.0.0.1 >nul\r\n" +
+                    "copy /y \"" + exe + "\" \"" + dir + "\\ShastraGuard.prev.exe\" >nul\r\n" +
+                    // a copy can fail when the old program is still closing or something holds the file: try three times
+                    "set ok=0\r\n" +
+                    "for /l %%i in (1,1,3) do (\r\n" +
+                    "  if not \"!ok!\"==\"1\" (\r\n" +
+                    "    taskkill /im ShastraGuard.exe /f >nul 2>&1\r\n" +
+                    "    copy /y \"" + newExe + "\" \"" + exe + "\" >nul 2>\"" + slog + "\" && fc /b \"" + newExe + "\" \"" + exe + "\" >nul 2>&1 && set ok=1\r\n" +
+                    "    if not \"!ok!\"==\"1\" ping -n 4 127.0.0.1 >nul\r\n" +
+                    "  )\r\n" +
+                    ")\r\n" +
+                    "if \"!ok!\"==\"1\" (del \"" + slog + "\" >nul 2>&1) else (if not exist \"" + newExe + "\" (echo the new program was removed before it could be copied, often by antivirus>>\"" + slog + "\") else (echo copy failed>>\"" + slog + "\"))\r\n" +
+                    "start \"\" \"" + exe + "\" --quiet\r\n");
+                try { File.WriteAllText(AttemptPath(), latest + "|" + DateTime.Now.ToString("o")); } catch { }
                 Log("Installing update " + latest + " and restarting");
                 ProcessStartInfo sp = new ProcessStartInfo("cmd.exe", "/c \"" + swap + "\"");
                 sp.CreateNoWindow = true; sp.UseShellExecute = false; sp.WindowStyle = ProcessWindowStyle.Hidden;
@@ -872,7 +929,8 @@ class ShastraGuard : Form
         Log("Windows + L reminder: " + (winLControlled ? "ON" : "off (admin permission not given yet, Windows + L locks normally)"));
         hotkeyOk = RegisterHotKey(Handle, 1, 0x0001 | 0x0002 | 0x4000, 0x4C); // Ctrl + Alt + L
         Log("Shastra Guard " + CurrentVersion + " started (Ctrl + Alt + L " + (hotkeyOk ? "ready" : "NOT available, another app uses it") + ")");
-        GuardPing("start", DateTime.Now, null, null, null, "Shastra Guard " + CurrentVersion + " started");
+        string upd0 = UpdateOutcome();
+        GuardPing("start", DateTime.Now, null, null, null, "Shastra Guard " + CurrentVersion + " started" + (upd0 != null ? "; " + upd0 : ""));
         System.Windows.Forms.Timer beat = new System.Windows.Forms.Timer();
         beat.Interval = 60000;
         beat.Tick += delegate { Heartbeat(); };
